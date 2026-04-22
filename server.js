@@ -1,87 +1,126 @@
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
+const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- MongoDB Connection ---
-// Environment variable se URI lo (Render settings mein set karo)
-const MONGODB_URI = process.env.MONGODB_URI;
-if (!MONGODB_URI) {
-    console.error('FATAL ERROR: MONGODB_URI environment variable not set.');
-    process.exit(1);
-}
-
-mongoose.connect(MONGODB_URI)
-    .then(() => console.log('✅ MongoDB Connected'))
-    .catch(err => {
-        console.error('❌ MongoDB Connection Error:', err);
-        process.exit(1);
-    });
-
-// --- Profile Model (Exactly same as bot's schema) ---
-const ProfileSchema = new mongoose.Schema({
-    userId: { type: String, required: true, unique: true },
-    bio: { type: String, default: "This user has no bio yet." },
-    badges: { type: [String], default: [] },
-    backgroundKey: { type: String, default: null },
-    backgroundPath: { type: String, default: null }
-});
-const Profile = mongoose.model('Profile', ProfileSchema);
-
 app.use(cors());
 
-// --- Helper: Convert badge keys to bot's expected response ---
-function formatBadgesResponse(badgeKeys) {
-    const response = {};
-    // Mapping from stored badge key (e.g., "OWNER") to bot's expected field (e.g., "isOwner")
-    const keyToFieldMap = {
-        'OWNER': 'isOwner',
-        'DEVELOPER': 'isDeveloper',
-        'ADMIN': 'isAdmin',
-        'MODERATOR': 'isModerator',
-        'VIP': 'isSupporter',      // Example: VIP ko Supporter me map kiya
-        'CONTRIBUTOR': 'isContributor', // Agar ye field bot map me nahi hai toh add karna hoga
-        'STAFF': 'isStaff',
-        'SUPPORTER': 'isSupporter',
-        'BUG_HUNTER': 'isBugHunters',
-        'COMMUNITY_MANAGER': 'isCommunityManager',
-        'MANAGER': 'isManager',
-        'SPECIAL': 'isSpecialOnes'
-    };
+// --- Helper to fetch random from array ---
+const randomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
-    badgeKeys.forEach(key => {
-        const field = keyToFieldMap[key];
-        if (field) {
-            response[field] = true;
-        }
-        // Agar koi key map nahi hai toh ignore
-    });
+// --- External APIs Configuration ---
+const FUN_GEN_API_KEY = process.env.FUN_GEN_API_KEY || ''; // Agar key ho to daalna, optional
 
-    return response;
-}
+// --- Local fallback prompts (if external APIs fail) ---
+const fallbackBanks = {
+    truth: [
+        "What's a secret you've never told anyone?",
+        "What's your biggest fear?",
+        "What's the most embarrassing thing you've done?",
+        "What's something you regret not doing?",
+        "What's a lie you've told recently?",
+    ],
+    dare: [
+        "Send a voice message singing a song.",
+        "Change your nickname to 'Potato' for 10 minutes.",
+        "Do 10 pushups now!",
+        "Send your most used emoji three times in a row.",
+        "Tell the channel your most chaotic snack combo.",
+    ],
+    paranoia: [
+        "Who in this server is most likely to be a secret agent?",
+        "Who would survive a zombie apocalypse longest?",
+        "Who do you think has a secret crush on someone here?",
+        "Who is most likely to become famous?",
+        "Who is the most mysterious person in this server?",
+    ],
+    wyr: [
+        { optionA: "Have super strength", optionB: "Have super speed" },
+        { optionA: "Live in the mountains", optionB: "Live on a beach" },
+        { optionA: "Be able to fly", optionB: "Be invisible" },
+        { optionA: "Talk to animals", optionB: "Speak every language" },
+        { optionA: "Never need to sleep", optionB: "Never need to eat" },
+    ],
+};
 
-// --- API Endpoint ---
-app.get('/getbadges', async (req, res) => {
-    const userId = req.query.userid;
-    if (!userId) {
-        return res.status(400).json({ error: 'Missing userid parameter' });
-    }
-
+// --- Core Function to Fetch from External APIs ---
+async function fetchFromExternal(endpoint, type) {
     try {
-        const profile = await Profile.findOne({ userId });
-        if (profile && Array.isArray(profile.badges) && profile.badges.length > 0) {
-            const response = formatBadgesResponse(profile.badges);
-            res.json(response);
-        } else {
-            res.json({}); // Empty object = no badges
+        let url, response, data;
+        switch (endpoint) {
+            case 'truth':
+                url = 'https://fungenerators.com/random/text/truth';
+                response = await axios.get(url, { headers: { 'Authorization': `Bearer ${FUN_GEN_API_KEY}` } });
+                data = response.data;
+                return data?.contents?.question || null;
+            case 'dare':
+                url = 'https://fungenerators.com/random/text/dare';
+                response = await axios.get(url, { headers: { 'Authorization': `Bearer ${FUN_GEN_API_KEY}` } });
+                data = response.data;
+                return data?.contents?.question || null;
+            case 'paranoia':
+                url = 'https://fungenerators.com/random/text/paranoia';
+                response = await axios.get(url, { headers: { 'Authorization': `Bearer ${FUN_GEN_API_KEY}` } });
+                data = response.data;
+                return data?.contents?.question || null;
+            case 'wyr':
+                // Using either.io free API
+                url = 'https://api.either.io/random';
+                response = await axios.get(url);
+                data = response.data;
+                if (data && data.sentence) {
+                    // Convert "Would you rather X or Y?" to { optionA, optionB }
+                    const sentence = data.sentence;
+                    const match = sentence.match(/Would you rather (.+?) or (.+?)\?/i);
+                    if (match) {
+                        return { optionA: match[1].trim(), optionB: match[2].trim() };
+                    }
+                }
+                return null;
+            default:
+                return null;
         }
     } catch (error) {
-        console.error('Error fetching user badges:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error(`Error fetching ${endpoint}:`, error.message);
+        return null;
     }
+}
+
+// --- Endpoint Handlers ---
+app.get('/truth', async (req, res) => {
+    let question = await fetchFromExternal('truth');
+    if (!question) {
+        question = randomItem(fallbackBanks.truth);
+    }
+    res.json({ truth: question });
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 Badge API running on port ${PORT}`);
+app.get('/dare', async (req, res) => {
+    let challenge = await fetchFromExternal('dare');
+    if (!challenge) {
+        challenge = randomItem(fallbackBanks.dare);
+    }
+    res.json({ dare: challenge });
 });
+
+app.get('/paranoia', async (req, res) => {
+    let question = await fetchFromExternal('paranoia');
+    if (!question) {
+        question = randomItem(fallbackBanks.paranoia);
+    }
+    res.json({ question });
+});
+
+app.get('/wyr', async (req, res) => {
+    let options = await fetchFromExternal('wyr');
+    if (!options) {
+        options = randomItem(fallbackBanks.wyr);
+    }
+    res.json({ optionA: options.optionA, optionB: options.optionB });
+});
+
+// --- Health Check Route ---
+app.get('/', (req, res) => res.send('🎉 Badge & Game API is running!'));
+
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
