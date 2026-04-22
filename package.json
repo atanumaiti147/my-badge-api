@@ -9,6 +9,6 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "mongoose": "^8.0.0"  // 👈 Yeh line hona zaroori hai
+    "mongoose": "^8.0.0"  
   }
 }
